@@ -2,6 +2,10 @@
 
 This is a Retrieval Augmented Generation (RAG) based AI system that answers questions based on provided documents. The system intelligently retrieves relevant information from text documents and generates accurate, context-aware responses using GROQ's language model.
 
+## System Architecture
+
+![RAG-Based AI Publication Agent Architecture](system_architecture.png)
+
 ## How It Works
 
 1. **Document Processing**: The system loads text documents from the `docs` directory, splits them into manageable chunks, and creates vector embeddings.
