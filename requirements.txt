@@ -1,0 +1,17 @@
+# Core dependencies for RAG-based AI Assistant
+langchain==0.3.25
+langchain-core==0.3.65
+langchain-community==0.3.25
+langchain-groq==0.3.2
+langchain-chroma==0.2.4
+langchain-huggingface==0.3.0
+langchain-text-splitters==0.3.8
+chromadb==1.0.12
+python-dotenv==1.1.0
+huggingface-hub==0.33.0
+sentence-transformers==4.1.0
+groq==0.28.0
+
+pydantic==2.11.6
+numpy==2.2.6
+typing-extensions==4.14.0

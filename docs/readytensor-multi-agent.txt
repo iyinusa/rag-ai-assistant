@@ -1,0 +1,225 @@
+An open-source, async-first Python framework for building multi-agent AI systems with an innovative approach to parallelism, so you can focus on creating intelligent agents, not on managing the concurrency of your flows.
+
+To install MiniAgents run the following command:
+
+pip install -U miniagents
+
+## Why MiniAgents
+
+    Write procedural code, get parallel execution: Unlike graph-based frameworks that force you to think in nodes and edges, MiniAgents lets you write straightforward sequential code while the framework handles the complexities of parallel execution for agent interactions automatically. Your code stays clear and readable.
+
+    Nothing blocks until it's needed: With its innovative promise-based architecture, agents execute in parallel. Execution only blocks at points where specific agent messages are actively awaited. Agents communicate through replayable promises of message sequences, not just concrete messages or single-pass async generators. This replayability is a key distinction, allowing message streams to be consumed multiple times by different agents or for different purposes, fostering flexible data flows and enabling maximum concurrency without complex manual synchronization code.
+
+    Immutable message philosophy: MiniAgents uses immutable, Pydantic-based messages that eliminate race conditions and data corruption concerns. This design choice enables highly parallelized agent execution without many of the common headaches of state management. (While messages themselves are immutable, state can still be maintained across multiple invocations of agents by using forked agent instances, a pattern demonstrated later in this tutorial.)
+
+    Fundamental Agent Contract: Every miniagent adheres to a simple contract: it receives a promise of an input sequence of message promises, arbitrary keyword arguments passed to it (which are all automatically "frozen" unless passed via non_freezable_kwargs upon forking an agent, which will be explained later in this tutorial), and in return, it produces a promise of a reply sequence of message promises.
+
+    Sequential Appearance, Parallel Reality via Promises: MiniAgents achieves this seamless blend of procedural style and concurrent execution through one of its core mechanisms: "Message Sequence Flattening". Here is a very simple example (a more complex example will be shown later in this tutorial):
+
+
+In the MiniAgents version:
+
+    When research_agent calls web_search_agent.trigger(...), this call is non-blocking. It immediately returns a MessageSequencePromise. The actual execution of web_search_agent starts in the background when the asyncio event loop gets a chance to switch tasks.
+    The ctx.reply(...) method (and its variant ctx.reply_out_of_order(...)) is versatile. It can accept:
+        Instances of Message (or its subclasses), or other concrete Python objects (like strings, dictionaries, or arbitrary Pydantic models). If not already Message objects, these are automatically wrapped into appropriate framework-specific Message types (e.g., TextMessage).
+        Promises of individual messages (MessagePromise).
+        Promises that resolve to a sequence of individual message promises (MessageSequencePromise), such as those returned by agent.trigger().
+        Collections (lists, tuples, etc.) containing any mix of the above.
+    MiniAgents automatically "flattens" this potentially deeply nested structure of messages and promises. When the main function (or another agent) consumes the response_promises from research_agent, it receives a single, flat sequence of all messages. This sequence includes messages produced directly by research_agent, all messages from all the triggered web_search_agent instances, and consequently, all messages from all the page_scraper_agent instances called by them.
+        A key aspect to remember is that sequence flattening happens both when you pass input to an agent (which can be concrete messages, promises, or collections of either) and when an agent replies with a promise of a message sequence (MessageSequencePromise).
+    The async for message_promise in promises: loop in the stream_to_stdout function in our example (which consumes the results in main) leads to asyncio switching tasks. This gives the agents (research_agent, web_search_agent, page_scraper_agent) a chance to run in the background. The use of reply_out_of_order in some of the agents ensures that certain messages are yielded to the output stream as soon as they are ready from these parallel operations, rather than in the order in which they were registered as part of the agent's response. This enhances the sense of parallelism from the consumer's perspective, though it doesn't change the parallelism of the actual agent execution (which is already parallel due to trigger being non-blocking).
+    A key feature highlighted in the main function of sequence_flattening.py is the replayability of MessageSequencePromise objects. You can iterate over response_promises multiple times and get the exact same sequence of messages. This is invaluable for scenarios where you might want to feed the same set of results to multiple different subsequent processing agents without worrying about "exhausting" the input stream.
+
+As you saw from the animation at the beginning of this section, the processing happens much faster, even though we didn't do anything special to achieve that, all thanks to parallelism introduced by the framework.
+
+This automatic concurrency and sequence flattening greatly simplify the development of complex, multi-step AI systems. You can focus on the logic of each individual agent, writing code that appears sequential within the agent, while the MiniAgents framework handles the parallel execution and complex data flow management behind the scenes.
+
+## Web Research System with real operations
+
+Now that we've explored the core concept of "Message Sequence Flattening" with a dummy example, let's dive into the fully functional Web Research System. This system uses real AI models for understanding and generation, performs actual web searches, and scrapes web pages to gather information.
+
+Again, as mentioned earlier, the complete source code for this example can be found here: https://github.com/teremterem/MiniAgents/tree/main/examples/web_research_tutorial
+
+### Prerequisites
+
+Before running the web_research.py script, you'll need to set up a few things:
+
+    Installation: First, install MiniAgents and the required dependencies:
+
+    pip install -U miniagents openai httpx pydantic markdownify python-dotenv selenium
+
+    Environment Variables: For the LLM we will use OpenAI
+
+and for the google searches as well as web scraping we will use Bright Data, a pay as you go scraping service. The two Bright Data products that we are interested in are: SERP API and Scraping Browser
+
+. Create a .env file in the same directory as web_research.py with the following credentials:
+
+# .env
+BRIGHTDATA_SERP_API_CREDS="your_serp_api_username:your_serp_api_password"
+BRIGHTDATA_SCRAPING_BROWSER_CREDS="your_scraping_browser_username:your_scraping_browser_password"
+OPENAI_API_KEY="your_openai_api_key"
+
+ATTENTION: The credentials above are NOT for your whole Bright Data account. They are for the SERP API and Scraping Browser respectively (their website will guide you how to set up both products).
+
+Helper Utilities (utils.py): The project uses a utils.py file (available here
+
+) which contains helper functions for:
+
+    fetch_google_search(): Interacts with the Bright Data SERP API.
+    scrape_web_page(): Uses Selenium with Bright Data's Scraping Browser to fetch and parse web page content. It runs Selenium in a separate thread pool as Selenium is blocking.
+
+You don't need to dive deep into utils.py to understand the MiniAgents framework, but it's essential for the example to run.
+
+### System Overview and the main function
+
+System Overview and the main function
+
+The entry point of our application is the main() function. It orchestrates the entire process:
+
+# examples/web_research_tutorial/web_research.py
+import asyncio
+from datetime import datetime
+from typing import Union
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from pydantic import BaseModel
+
+from miniagents import (
+    AgentCall,
+    InteractionContext,
+    Message,
+    MessageSequencePromise,
+    MiniAgents,
+    miniagent,
+)
+from miniagents.ext.llms import OpenAIAgent, aprepare_dicts_for_openai
+
+from utils import fetch_google_search, scrape_web_page
+
+load_dotenv() # Load environment variables from .env file
+
+MODEL = "gpt-4o-mini"  # "gpt-4o"
+SMARTER_MODEL = "o4-mini"  # "o3"
+MAX_WEB_PAGES_PER_SEARCH = 2
+SLEEP_BEFORE_RETRY_SEC = 5
+
+openai_client = AsyncOpenAI()
+
+
+async def main():
+    question = input("\nEnter your question: ")
+
+    # Invoke the main agent (no `await` is placed in front of the call, hence
+    # this is a non-blocking operation, no processing starts just yet)
+    response_promises: MessageSequencePromise = research_agent.trigger(question)
+
+    print()
+    # Iterate over the individual message promises in the response sequence
+    # promise. The async loops below lead to task switching, so the agent above
+    # as well as its "sub-agents" will now start their work in the background
+    # to serve all the promises.
+    async for message_promise in response_promises:
+        # Skip messages that are not intended for the user (you'll see where
+        # the `not_for_user` attribute is set later)
+        if message_promise.known_beforehand.get("not_for_user"):
+            continue
+        # Iterate over the individual tokens in the message promise (messages
+        # that aren't broken down into tokens will be delivered in a single
+        # token)
+        async for token in message_promise:
+            print(token, end="", flush=True)
+        print("\n")
+
+# ... (rest of the file)
+
+Key takeaways from main():
+
+    Filtering Messages: Some messages might be internal to the agent system (e.g., detailed summaries for other agents). We can attach metadata to messages (like not_for_user) and use it to filter what's shown to the end-user. The known_beforehand attribute of a MessagePromise allows access to metadata that is available before the message content itself is resolved. This can be useful for early filtering or routing of messages. In our main function, we use this to check the "not_for_user" flag (set in page_scraper_agent) to prevent internal page summaries from being directly displayed.
+    Centralized Output: Notice that all user-facing output happens here. Agents themselves don't print. They communicate results back, which main then decides how to present. This separation makes it easier to change the UI or even integrate this entire agentic system as a component within a larger AI system, where its output would be consumed programmatically rather than printed to a console.
+
+NOTE: Background execution is optional. MiniAgents, by default, starts processing triggered agents as soon as possible, and this is generally the desired behavior for maximum parallelism. You can, however, disable this behavior by passing start_soon=False to individual trigger calls, or by setting start_everything_soon_by_default=False in the MiniAgents constructor for a global effect. The latter is generally not recommended, though. Disabling "early start" globally can often lead to deadlocks if agent interdependencies are complex, and in the majority of scenarios, there is hardly any benefit in setting start_soon to False.
+
+### The research_agent: Orchestrating the Search
+
+The research_agent is the primary coordinator. It takes the user's question and breaks it down into actionable steps.
+
+# examples/web_research_tutorial/web_research.py
+# ... (imports and setup shown above) ...
+
+@miniagent
+async def research_agent(ctx: InteractionContext) -> None:
+    ctx.reply("RESEARCHING...")
+
+    # First, analyze the user's question and break it down into search queries
+    message_dicts = await aprepare_dicts_for_openai(
+        ctx.message_promises, # The user's question
+        system=(
+            "Your job is to breakdown the user's question into a list of web "
+            "searches that need to be done to answer the question. Please try "
+            "to optimize your search queries so there aren't too many of "
+            "them. Current date is " + datetime.now().strftime("%Y-%m-%d")
+        ),
+    )
+    # Using OpenAI's client library directly for structured output
+    response = await openai_client.beta.chat.completions.parse(
+        model=SMARTER_MODEL,
+        messages=message_dicts,
+        response_format=WebSearchesToBeDone, # Pydantic model for structured output
+    )
+    parsed: WebSearchesToBeDone = response.choices[0].message.parsed
+
+    ctx.reply(f"RUNNING {len(parsed.web_searches)} WEB SEARCHES")
+
+    already_picked_urls = set[str]()
+    # Fork the `web_search_agent` to create an isolated, configurable instance
+    # for this task. `non_freezable_kwargs` allows passing mutable objects like
+    # our `already_picked_urls` set, which will then be specific to this forked
+    # agent instance and shared across its invocations within this research
+    # task.
+    _web_search_agent = web_search_agent.fork(
+        non_freezable_kwargs={
+            "already_picked_urls": already_picked_urls,
+        },
+    )
+
+    # Initiate a call to the final_answer_agent. We'll send it data as we
+    # gather it.
+    final_answer_call: AgentCall = final_answer_agent.initiate_call(
+        user_question=await ctx.message_promises,
+    )
+
+    # For each identified search query, trigger a web search agent
+    for web_search in parsed.web_searches:
+        search_and_scraping_results = _web_search_agent.trigger(
+            ctx.message_promises, # Forwarding the original user question
+            search_query=web_search.web_search_query,
+            rationale=web_search.rationale,
+        )
+        # `reply_out_of_order` sends messages to the research_agent's output
+        # as they become available, maintaining responsiveness.
+        ctx.reply_out_of_order(search_and_scraping_results)
+
+        # Send the same results to the final_answer_agent
+        final_answer_call.send_message(search_and_scraping_results)
+
+    # Reply with the sequence from final_answer_agent, effectively chaining
+    # its output to research_agent's output. This also closes the call to
+    # final_answer_agent.
+    ctx.reply(final_answer_call.reply_sequence())
+
+# ... (other agents)
+
+Key aspects of research_agent:
+
+    Query Generation: It uses an LLM (via openai_client.beta.chat.completions.parse) to break the user's question into a list of specific search queries. WebSearchesToBeDone is a Pydantic model that ensures the LLM returns data in the expected structure (using OpenAI's "structured output" feature). While this example uses the OpenAI client library directly for structured output, MiniAgents plans to support this natively as another built-in LLM miniagent, along with already existing OpenAIAgent, AnthropicAgent etc. which simply generate text.
+    Agent Forking for Configuration and State: The web_search_agent needs to keep track of URLs it has already decided to scrape to avoid redundant work. agent.fork() creates a new, independent version (an "instance") of the agent. This is useful for creating agents with specific configurations or, as in this case, for endowing an agent instance with mutable state (like already_picked_urls) that is shared across its invocations by this particular forked instance. The non_freezable_kwargs argument is the mechanism for passing such mutable resources that cannot (or should not) be "frozen" by the fork.
+    Initiating Calls (initiate_call): The final_answer_agent will eventually synthesize an answer using all gathered information. We don't have all this information upfront. final_answer_agent.initiate_call() creates an AgentCall object. This allows research_agent to send messages (or message promises) to final_answer_agent incrementally using final_answer_call.send_message().
+    Parallel Fan-Out (trigger without await): For each generated search query, _web_search_agent.trigger() is called. Again, no await means these sub-agents start working in parallel.
+    Out-of-Order Replies (ctx.reply_out_of_order): As results from _web_search_agent (which include search and scraping steps) become available, ctx.reply_out_of_order() sends them to the output stream of research_agent. As mentioned earlier, we use reply_out_of_order() to avoid enforcing message delivery in the order they were added to the reply. Delivering these messages as soon as they are available allows research_agent to show progress from different search branches in real time.
+    Chaining Agent Output: Finally, ctx.reply(final_answer_call.reply_sequence()) takes the response that final_answer_agent will produce (in this example, a sequence consisting of a single message containing the synthesized answer) and appends it to research_agent's own output. reply_sequence() also signals to final_answer_agent that no more input messages will be sent via final_answer_call.send_message(), effectively closing the call (such behavior can be prevented with reply_sequence(finish_call=False) if needed, though).
+
+
+## Conclusion
+
+Artificial Intelligence continues to evolve and shape our world. As AI technologies become more sophisticated and widespread, they will undoubtedly transform how we live, work, and interact with the world around us.
