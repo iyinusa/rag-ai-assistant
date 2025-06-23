@@ -81,7 +81,7 @@ def query_agent(question):
 def run_cli():
     """Run the agent in CLI mode."""
     print("\nRAG-based AI Publication Agent")
-    print("------------------------------")
+    print("==============================")
     print("Type 'exit' or 'quit' to exit the program.\n")
     
     while True:

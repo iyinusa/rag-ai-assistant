@@ -229,9 +229,9 @@ retriever = vector_store.as_retriever(
 Adjust document chunking parameters in `src/utils/document_loader.py` to optimize for your documents:
 
 ```python
-def split_documents(documents, chunk_size=1000, chunk_overlap=200):
-    # Increase chunk_size for longer contexts
-    # Increase chunk_overlap for better continuity between chunks
+def split_documents(documents):
+    # Increase CHUNK_SIZE in settings for longer contexts
+    # Increase CHUNK_OVERLAP in settings for better continuity between chunks
 ```
 
 ### Using Different LLMs

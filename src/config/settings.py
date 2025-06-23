@@ -17,6 +17,10 @@ CHROMA_PERSIST_DIRECTORY = "./chroma_db"
 # Embedding Model Configuration
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
+# Documeent Chunking Configuration
+CHUNK_SIZE = 1000  # Size of each document chunk in characters
+CHUNK_OVERLAP = 200  # Overlap between chunks in characters
+
 # Document Configuration
 DOCS_DIRECTORY = "./docs"
 

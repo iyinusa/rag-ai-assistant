@@ -43,7 +43,7 @@ def load_documents():
         
     return documents
 
-def split_documents(documents, chunk_size=1000, chunk_overlap=200):
+def split_documents(documents):
     """
     Split documents into chunks for better processing.
     
@@ -59,8 +59,8 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
         return []
         
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        chunk_size=settings.CHUNK_SIZE,
+        chunk_overlap=settings.CHUNK_OVERLAP,
         separators=["\n\n", "\n", " ", ""]
     )
     
